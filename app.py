@@ -1,33 +1,19 @@
 from flask import Flask, request
 import requests
 import json
-import threading
-import time
 import os
 
 app = Flask(__name__)
 
 # 🔐 Telegram Bot Token - Get from environment variable for security
-BOT_TOKEN = os.getenv("BOT_TOKEN", "7662637929:AAG3Dwk7Y5Wa0XX1f5GrrNUd0s1O00RkDsc")
-TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+if not BOT_TOKEN:
+    raise ValueError("BOT_TOKEN environment variable is required!")
 
-# from flask import Flask, request
-import requests
-import json
-import threading
-import time
-
-app = Flask(__name__)
-
-# 🔐 Telegram Bot Token - UPDATE THIS WITH YOUR ACTUAL TOKEN
-BOT_TOKEN = "7662637929:AAG3Dwk7Y5Wa0XX1f5GrrNUd0s1O00RkDsc"
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
 # 🔒 Global chat ID will be remembered after /start
 chat_id_memory = {}
-
-# 🔄 Polling mode for local testing
-POLLING_MODE = False  # Set to True for local testing, False for production webhooks
 
 # ✅ Fetch Gamersberg Seed Stock
 def get_stock_data():
@@ -153,73 +139,9 @@ def process_message(message):
     except Exception as e:
         print(f"[❌] Error processing message: {e}")
 
-# ✅ Clear webhook and reset bot
-def reset_bot():
-    try:
-        # Delete webhook first
-        response = requests.post(f"{TELEGRAM_API}/deleteWebhook")
-        if response.status_code == 200:
-            print("✅ Webhook deleted")
-        else:
-            print(f"⚠️ Webhook deletion response: {response.text}")
-            
-        # Clear pending updates
-        response = requests.post(f"{TELEGRAM_API}/getUpdates", json={"offset": -1})
-        if response.status_code == 200:
-            print("✅ Pending updates cleared")
-        else:
-            print(f"⚠️ Updates clear response: {response.text}")
-            
-        time.sleep(2)  # Wait a bit before starting polling
-        
-    except Exception as e:
-        print(f"[❌] Error resetting bot: {e}")
-
-# 🔄 Polling function for local testing
-def start_polling():
-    offset = 0
-    print("[🔄] Starting polling mode...")
-    
-    # Reset bot first
-    reset_bot()
-    
-    while POLLING_MODE:
-        try:
-            response = requests.get(f"{TELEGRAM_API}/getUpdates", params={
-                "offset": offset,
-                "timeout": 10
-            })
-            
-            if response.status_code == 200:
-                updates = response.json().get("result", [])
-                
-                for update in updates:
-                    print(f"[📥] Polling update: {json.dumps(update, indent=2)}")
-                    offset = update["update_id"] + 1
-                    
-                    if "message" in update:
-                        process_message(update["message"])
-                        
-            elif response.status_code == 409:
-                print("[⚠️] Conflict detected - clearing webhook and retrying...")
-                reset_bot()
-                time.sleep(5)  # Wait longer before retry
-                
-            else:
-                print(f"[❌] Polling error: {response.status_code} - {response.text}")
-                time.sleep(5)
-                
-        except Exception as e:
-            print(f"[❌] Polling exception: {e}")
-            time.sleep(5)
-            
-        time.sleep(1)  # Wait 1 second between polls
 # ✅ Webhook route (for production)
-@app.route(f"/{BOT_TOKEN}", methods=["POST"])
+@app.route(f"/webhook/{BOT_TOKEN}", methods=["POST"])
 def webhook():
-    if POLLING_MODE:
-        return "Polling mode is active, webhooks disabled", 200
-        
     try:
         data = request.get_json()
         print(f"[📥] Webhook received: {json.dumps(data, indent=2)}")
@@ -263,12 +185,42 @@ def trigger():
 def home():
     return "🚀 Bot is up and running."
 
+# ✅ Set webhook route
+@app.route("/set_webhook", methods=["GET"])
+def set_webhook():
+    try:
+        # Get the render URL from environment or construct it
+        render_url = os.getenv("RENDER_EXTERNAL_URL")
+        if not render_url:
+            return "❌ RENDER_EXTERNAL_URL environment variable is required!", 400
+        
+        webhook_url = f"{render_url}/webhook/{BOT_TOKEN}"
+        
+        response = requests.post(
+            f"{TELEGRAM_API}/setWebhook",
+            json={"url": webhook_url}
+        )
+        
+        result = response.json()
+        print(f"[📡] Webhook setup result: {result}")
+        
+        if result.get("ok"):
+            return f"✅ Webhook set successfully to: {webhook_url}"
+        else:
+            return f"❌ Failed to set webhook: {result.get('description', 'Unknown error')}"
+            
+    except Exception as e:
+        print(f"[❌] Error setting webhook: {e}")
+        return f"❌ Error setting webhook: {e}", 500
+
 # ✅ Clear webhook manually
 @app.route("/clear_webhook", methods=["GET"])
 def clear_webhook():
     try:
         response = requests.post(f"{TELEGRAM_API}/deleteWebhook")
-        return f"Webhook cleared: {response.json()}"
+        result = response.json()
+        print(f"[📡] Webhook clear result: {result}")
+        return f"Webhook cleared: {result}"
     except Exception as e:
         return f"❌ Error clearing webhook: {e}", 500
 
@@ -280,36 +232,20 @@ def bot_info():
         return response.json()
     except Exception as e:
         return f"❌ Error getting bot info: {e}", 500
-@app.route("/set_webhook", methods=["GET"])
-def set_webhook():
-    webhook_url = request.args.get('url')
-    if not webhook_url:
-        return "❌ Please provide webhook URL as ?url=YOUR_WEBHOOK_URL", 400
-    
+
+# ✅ Check webhook status
+@app.route("/webhook_info", methods=["GET"])
+def webhook_info():
     try:
-        response = requests.post(
-            f"{TELEGRAM_API}/setWebhook",
-            json={"url": f"{webhook_url}/{BOT_TOKEN}"}
-        )
-        return f"Webhook result: {response.json()}"
+        response = requests.get(f"{TELEGRAM_API}/getWebhookInfo")
+        return response.json()
     except Exception as e:
-        return f"❌ Error setting webhook: {e}", 500
+        return f"❌ Error getting webhook info: {e}", 500
 
 # ✅ Flask App Runner
 if __name__ == "__main__":
-    print("🚀 Starting Telegram Bot...")
-    print(f"📡 Bot Token: {BOT_TOKEN[:10]}...")
-    
-    if POLLING_MODE:
-        print("🔄 Running in POLLING mode (for local testing)")
-        print("📡 Webhook endpoint disabled")
-        # Start polling in a separate thread
-        polling_thread = threading.Thread(target=start_polling)
-        polling_thread.daemon = True
-        polling_thread.start()
-    else:
-        print("📡 Running in WEBHOOK mode (for production)")
-        print(f"📡 Webhook endpoint: /{BOT_TOKEN}")
+    print("🚀 Starting Telegram Bot for Render...")
+    print(f"📡 Bot Token: {BOT_TOKEN[:10] if BOT_TOKEN else 'NOT SET'}...")
     
     # Test bot connectivity
     try:
@@ -322,4 +258,11 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"❌ Error connecting to bot: {e}")
     
-    app.run(host="0.0.0.0", port=10000, debug=True)
+    # Get port from environment (Render provides this)
+    port = int(os.getenv("PORT", 10000))
+    
+    print(f"📡 Running in WEBHOOK mode on port {port}")
+    print(f"📡 Webhook endpoint: /webhook/{BOT_TOKEN}")
+    print("📡 After deployment, visit /set_webhook to configure the webhook")
+    
+    app.run(host="0.0.0.0", port=port, debug=False)
